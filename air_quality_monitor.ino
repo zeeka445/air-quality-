@@ -1,0 +1,41 @@
+#include <DHT.h>
+
+#define DHTPIN 2        
+#define DHTTYPE DHT11  
+
+DHT dht(DHTPIN, DHTTYPE);
+
+
+#define gasSensorPin A0
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  pinMode(gasSensorPin, INPUT);
+}
+
+void loop() {
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  int gasValue = analogRead(gasSensorPin);
+  float voltage = gasValue * (5.0 / 1023.0);
+
+  String quality;
+  if (gasValue < 75) {
+    quality = "Clean";
+  } else if (gasValue < 150) {
+    quality = "Moderate";
+  } else {
+    quality = "Polluted";
+  }
+
+  Serial.print(temperature);
+  Serial.print(",");
+  Serial.print(humidity);
+  Serial.print(",");
+  Serial.print(voltage, 2);
+  Serial.print(",");
+  Serial.println(quality);
+
+  delay(2000);
+}
