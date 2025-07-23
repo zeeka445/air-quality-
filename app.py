@@ -1,20 +1,20 @@
-//app.py(python)
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, send_file
 import serial
 import threading
 import time
 from datetime import datetime
 import pandas as pd
 import os
-
+import re 
 app = Flask(__name__)
 data_buffer = []
 arduino_connected = False
-ALERT_LED_PIN = 13
+BUZZER_PIN = 4
+STATUS_LED_PIN = 3
 TEMP_THRESHOLD = 40
-HUM_THRESHOLD = 90
+HUM_THRESHOLD = 70
 GAS_THRESHOLD = 800
-EXCEL_FILE = "readings.xlsx"  # اسم ملف Excel
+EXCEL_FILE = "readings.xlsx"
 
 AIR_QUALITY_THRESHOLDS = {
     'Excellent': 200,
@@ -52,50 +52,64 @@ def read_serial():
     while True:
         if arduino and arduino.is_open:
             try:
-                raw = arduino.readline().decode('utf-8').strip()
+                raw = arduino.readline().decode('utf-8', errors='ignore').strip()
+                print(f"Raw data received: {raw}")  # للتصحيح
+                
                 if raw:
-                    parts = [p.strip() for p in raw.split(",")]
-                    if len(parts) >= 3:
-                        temp = float(parts[0])
-                        hum = float(parts[1])
-                        gas = float(parts[2])
-                        quality = determine_air_quality(gas)
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        alert = ''
-
-                        if temp > TEMP_THRESHOLD:
-                            alert = f"⚠️ درجة الحرارة مرتفعة ({temp}°C)"
-                            arduino.write(b'1\n')
-                        elif hum > HUM_THRESHOLD:
-                            alert = f"⚠️ الرطوبة مرتفعة ({hum}%)"
-                            arduino.write(b'1\n')
-                        elif gas > GAS_THRESHOLD:
-                            alert = f"⚠️ مستوى الغاز مرتفع ({gas} PPM)"
-                            arduino.write(b'1\n')
-                        else:
-                            arduino.write(b'0\n')
-
-                        new_data = {
-                            "temp": temp,
-                            "hum": hum,
-                            "gas": gas,
-                            "quality": quality,
-                            "timestamp": timestamp,
-                            "alert": alert
-                        }
-
-                        data_buffer.append(new_data)
+                    try:
+                        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", raw)
                         
-                        # حفظ البيانات في Excel كل 10 قراءات
-                        if len(data_buffer) % 10 == 0:
-                            save_to_excel()
+                        if len(numbers) >= 3:
+                            temp = float(numbers[0])
+                            hum = float(numbers[1])
+                            gas = float(numbers[2])
+                            quality = determine_air_quality(gas)
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            alert = ''
 
-                        if len(data_buffer) > 100:
-                            data_buffer.pop(0)
+                            # التحقق من تجاوز الحدود
+                            alert_condition = (temp > TEMP_THRESHOLD or 
+                                             hum > HUM_THRESHOLD or 
+                                             gas > GAS_THRESHOLD)
+
+                            if alert_condition:
+                                arduino.write(b'1\n')  # تشغيل الإنذار
+                                if temp > TEMP_THRESHOLD:
+                                    alert = f"⚠️ درجة الحرارة مرتفعة ({temp}°C)"
+                                if hum > HUM_THRESHOLD:
+                                    alert = f"⚠️ الرطوبة مرتفعة ({hum}%)"
+                                if gas > GAS_THRESHOLD:
+                                    alert = f"⚠️ مستوى الغاز مرتفع ({gas} PPM)"
+                            else:
+                                arduino.write(b'0\n') 
+
+                            new_data = {
+                                "temp": temp,
+                                "hum": hum,
+                                "gas": gas,
+                                "quality": quality,
+                                "timestamp": timestamp,
+                                "alert": alert
+                            }
+
+                            data_buffer.append(new_data)
+                            
+                            # حفظ البيانات كل 10 قراءات
+                            if len(data_buffer) % 10 == 0:
+                                save_to_excel()
+
+                            if len(data_buffer) > 100:
+                                data_buffer.pop(0)
+                    except ValueError as e:
+                        print(f"خطأ في تحويل البيانات: {e}، البيانات الخام: {raw}")
+                    except Exception as e:
+                        print(f"خطأ غير متوقع: {e}")
             except Exception as err:
                 print("خطأ أثناء قراءة البيانات:", err)
+                arduino_connected = False
         else:
             arduino_connected = False
+            print("الأردوينو غير متصل")
         time.sleep(2)
 
 @app.route('/')
@@ -106,11 +120,21 @@ def home():
 def get_data():
     return jsonify(data_buffer)
 
+@app.route('/export')
+def export_data():
+    try:
+        df = pd.DataFrame(data_buffer)
+        excel_path = "exported_data.xlsx"
+        df.to_excel(excel_path, index=False)
+        return send_file(excel_path, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
-    # إنشاء ملف Excel جديد عند التشغيل
     if os.path.exists(EXCEL_FILE):
         os.remove(EXCEL_FILE)
     pd.DataFrame().to_excel(EXCEL_FILE)
     
     threading.Thread(target=read_serial, daemon=True).start()
+    
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
